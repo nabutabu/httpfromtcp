@@ -2,15 +2,24 @@ package request
 
 import (
 	"errors"
+	"httpFromTcp/internal/headers"
 	"io"
 	"log"
 	"strings"
 	"unicode"
 )
 
+const (
+	Initialized                int = 0
+	RequestLineDone            int = 1
+	RequestStateParsingHeaders int = 2
+	RequestStateDone           int = 3
+)
+
 type Request struct {
 	RequestLine RequestLine
-	state       int // 0 initialized, 1 done
+	Headers     headers.Headers
+	state       int
 }
 
 type RequestLine struct {
@@ -63,7 +72,7 @@ func (r *Request) parse(data []byte) (int, error) {
 	}
 
 	r.RequestLine = *reqLine
-	r.state = 1
+	r.state = RequestLineDone
 
 	return len(data), nil
 }
