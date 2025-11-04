@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"httpFromTcp/internal/request"
+	"io"
 	"log"
 	"net"
 	"strings"
@@ -51,14 +53,6 @@ func readMessages(c chan string, cn net.Conn) {
 	close(c)
 }
 
-func getLinesChannel(f net.Conn) <-chan string {
-	c := make(chan string)
-
-	go readMessages(c, f)
-
-	return c
-}
-
 func main() {
 	l, err := net.Listen("tcp", ":42069")
 	if err != nil {
@@ -80,11 +74,16 @@ func main() {
 		// multiple connections may be served concurrently.
 		go func(cn net.Conn) {
 			// Echo all incoming data.
-			c := getLinesChannel(cn)
 
-			for s := range c {
-				fmt.Printf("%s", s)
+			req, err := request.RequestFromReader(io.Reader(cn))
+			if err != nil {
+				log.Fatal(err)
 			}
+
+			fmt.Println("Request line:")
+			fmt.Printf("- Method: %s\n", req.RequestLine.Method)
+			fmt.Printf("- Target: %s\n", req.RequestLine.RequestTarget)
+			fmt.Printf("- Version: %s\n", req.RequestLine.HttpVersion)
 
 			// Shut down the connection.
 			//fmt.Println("Closing Connection")
