@@ -14,6 +14,8 @@ const (
 	RequestLineDone            int = 1
 	RequestStateParsingHeaders int = 2
 	RequestStateDone           int = 3
+
+	LengthOfRN = 2
 )
 
 type Request struct {
@@ -64,17 +66,73 @@ func parseRequestLine(start_line string) (*RequestLine, error) {
 	return &RequestLine{HttpVersion, RequestTarget, Method}, nil
 }
 
-func (r *Request) parse(data []byte) (int, error) {
-	// for now this is first called when we have completely seen the request line
-	reqLine, err := parseRequestLine(string(data))
-	if err != nil {
-		return 0, err
+func (r *Request) parseSingle(data []byte) (int, error) {
+	// based on current state of request, handle next step
+	switch r.state {
+
+	case Initialized:
+		// for now this is first called when we have completely seen the request line
+		parts := strings.Split(string(data), "\r\n")
+		reqLine, err := parseRequestLine(parts[0])
+		if err != nil {
+			return 0, err
+		}
+
+		r.RequestLine = *reqLine
+		r.state = RequestLineDone
+
+		return strings.Index(string(data), "\r\n") + LengthOfRN, nil
+
+	case RequestLineDone, RequestStateParsingHeaders:
+		// set state to processing
+		r.state = RequestStateParsingHeaders
+
+		if r.Headers == nil {
+			r.Headers = headers.NewHeaders()
+		}
+
+		// get one header at a time and add to request
+		n, done, err := r.Headers.Parse(data)
+		if err != nil {
+			return 0, nil
+		}
+
+		if done {
+			r.state = RequestStateDone
+		}
+
+		return n, nil
 	}
 
-	r.RequestLine = *reqLine
-	r.state = RequestLineDone
+	return 0, nil
+}
 
-	return len(data), nil
+func (r *Request) parse(data []byte) (int, error) {
+	// called when any data is recieved
+	// need to check if we have atleast one line
+	if !strings.Contains(string(data), "\r\n") {
+		// does not even have one line
+		return 0, nil
+	}
+
+	// because our current chunk can have multiple parts of the request
+	// (both request line and headers for ex)
+	// run the loop until either the entire request is parsed or all bytes are consumed
+	bytesParsed := 0
+	for r.state != RequestStateDone {
+		n, err := r.parseSingle(data[bytesParsed:])
+		if err != nil {
+			return bytesParsed, err
+		}
+
+		if n == 0 {
+			return bytesParsed, nil
+		}
+
+		bytesParsed += n
+	}
+
+	return bytesParsed, nil
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
@@ -88,7 +146,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 	var bytesParsed int
 
 	for {
-		if request.state == 1 {
+		if request.state == RequestStateDone {
 			return &request, nil
 		}
 
@@ -102,20 +160,14 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		bytesRead += n
 
 		// received some amount of text
-		// once we recieve a \r\n we know we have
-		// received atleast one part of the request
-		if strings.Contains(line, "\r\n") {
-			// parse the string before \r\n
-			parts := strings.Split(line, "\r\n")
-			bytes, err := request.parse([]byte(parts[0]))
-			if err != nil {
-				return nil, err
-			}
-
-			// after parsing set line to the remainder of parts
-			bytesParsed += bytes
-			line = line[bytes:]
+		bytes, err := request.parse([]byte(line))
+		if err != nil {
+			return nil, err
 		}
+
+		// after parsing set line to the remainder of parts
+		bytesParsed += bytes
+		line = line[bytes:]
 	}
 
 }

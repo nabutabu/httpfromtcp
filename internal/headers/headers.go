@@ -7,6 +7,10 @@ import (
 	"unicode"
 )
 
+const (
+	LengthOfRN = 2
+)
+
 type Headers map[string]string
 
 func NewHeaders() Headers {
@@ -86,7 +90,7 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 	}
 
 	header_parts := strings.Split(header, ": ")
-	//header_parts[0] = strings.ToLower(header_parts[0])
+	header_parts[0] = strings.ToLower(header_parts[0])
 
 	// check header_parts[0] for invalid chars
 	if !isValidCharSetNoRegex(header_parts[0]) {
@@ -99,5 +103,5 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 		h[header_parts[0]] += ", " + header_parts[1]
 	}
 
-	return strings.Index(string(data), "\r\n") + 2, false, nil
+	return strings.Index(string(data), "\r\n") + LengthOfRN, false, nil
 }

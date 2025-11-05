@@ -1,12 +1,13 @@
 package request
 
 import (
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
 	"log"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type chunkReader struct {
@@ -71,7 +72,7 @@ func TestRequestLineParse(t *testing.T) {
 
 }
 
-func TestRequestLineHeaderParse(t *testing.T) {
+func TestRequestLineAndHeaderParse(t *testing.T) {
 	// Test: Standard Headers
 	reader := &chunkReader{
 		data:            "GET / HTTP/1.1\r\nHost: localhost:42069\r\nUser-Agent: curl/7.81.0\r\nAccept: */*\r\n\r\n",
@@ -83,6 +84,8 @@ func TestRequestLineHeaderParse(t *testing.T) {
 	assert.Equal(t, "localhost:42069", r.Headers["host"])
 	assert.Equal(t, "curl/7.81.0", r.Headers["user-agent"])
 	assert.Equal(t, "*/*", r.Headers["accept"])
+
+	log.Println(r)
 
 	// Test: Malformed Header
 	reader = &chunkReader{
