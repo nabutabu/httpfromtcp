@@ -64,6 +64,10 @@ func isValidCharSetNoRegex(s string) bool {
 	return true
 }
 
+func (h Headers) Get(key string) string {
+	return h[key]
+}
+
 func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 	log.Println("/ParseHeader")
 	if !strings.Contains(string(data), "\r\n") {
@@ -73,7 +77,7 @@ func (h Headers) Parse(data []byte) (n int, done bool, err error) {
 	// data contains \r\n
 	// check if EOF (indexOf("\r\n") == 0)
 	if strings.Index(string(data), "\r\n") == 0 {
-		return 0, true, nil
+		return LengthOfRN, true, nil
 	}
 
 	// get parts of data

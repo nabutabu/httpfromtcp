@@ -5,15 +5,17 @@ import (
 	"httpFromTcp/internal/headers"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"unicode"
 )
 
 const (
 	Initialized                int = 0
-	RequestLineDone            int = 1
-	RequestStateParsingHeaders int = 2
-	RequestStateDone           int = 3
+	RequestStateParsingHeaders int = 1
+	RequestLineDone            int = 2
+	RequestStateParsingBody    int = 3
+	RequestStateDone           int = 4
 
 	LengthOfRN = 2
 )
@@ -21,6 +23,7 @@ const (
 type Request struct {
 	RequestLine RequestLine
 	Headers     headers.Headers
+	Body        []byte
 	state       int
 }
 
@@ -98,10 +101,42 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 		}
 
 		if done {
-			r.state = RequestStateDone
+			r.state = RequestStateParsingBody
 		}
 
 		return n, nil
+
+	case RequestStateParsingBody:
+		r.state = RequestStateParsingBody
+
+		contentLength := r.Headers.Get("content-length")
+
+		if contentLength == "" {
+			if len(data) > 0 {
+				return 0, errors.New("Invalid Body: Content-Length not specified in Headers")
+			}
+			r.state = RequestStateDone
+			return 0, nil
+		}
+
+		// got some amount of content to parse
+		size, err := strconv.Atoi(contentLength)
+		if err != nil {
+			return 0, err
+		}
+
+		r.Body = append(r.Body, data...)
+
+		if len(r.Body) > size {
+			return 0, errors.New("Invalid Body: Too many characters")
+		}
+
+		if len(r.Body) == size {
+			r.state = RequestStateDone
+			return len(data), nil
+		}
+
+		return len(data), nil
 	}
 
 	return 0, nil
@@ -109,8 +144,8 @@ func (r *Request) parseSingle(data []byte) (int, error) {
 
 func (r *Request) parse(data []byte) (int, error) {
 	// called when any data is recieved
-	// need to check if we have atleast one line
-	if !strings.Contains(string(data), "\r\n") {
+	// need to check if we have atleast one line but only if we are not parsing the body currently
+	if !strings.Contains(string(data), "\r\n") && r.state != RequestStateParsingBody {
 		// does not even have one line
 		return 0, nil
 	}
