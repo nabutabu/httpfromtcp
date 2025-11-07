@@ -1,6 +1,7 @@
 package response
 
 import (
+	"errors"
 	"httpFromTcp/internal/headers"
 	"io"
 	"strconv"
@@ -13,8 +14,42 @@ const (
 	ClientError StatusCode = 400
 	ServerError StatusCode = 500
 
+	WriterStateInitialized = 0
+	WriterStateStatusDone  = 1
+	WriterStateHeadersDone = 2
+	WriterStateBodyDone    = 3
+
 	RegisteredNurse string = "\r\n"
 )
+
+type Writer struct {
+	W           io.Writer
+	WriterState int
+}
+
+func (writer *Writer) WriteStatusLine(statusCode StatusCode) error {
+	if writer.WriterState != WriterStateInitialized {
+		return errors.New("Invalid writer state")
+	}
+	writer.WriterState = WriterStateStatusDone
+	return WriteStatusLine(writer.W, statusCode)
+}
+
+func (writer *Writer) WriteHeaders(headers headers.Headers) error {
+	if writer.WriterState != WriterStateStatusDone {
+		return errors.New("Invalid writer state")
+	}
+	writer.WriterState = WriterStateHeadersDone
+	return WriteHeaders(writer.W, headers)
+}
+
+func (writer *Writer) WriteBody(p []byte) (int, error) {
+	if writer.WriterState != WriterStateHeadersDone {
+		return 0, errors.New("Invalid writer state")
+	}
+	writer.WriterState = WriterStateBodyDone
+	return writer.W.Write(p)
+}
 
 func WriteStatusLine(w io.Writer, statusCode StatusCode) error {
 	var reasonPhrase string
@@ -33,11 +68,11 @@ func WriteStatusLine(w io.Writer, statusCode StatusCode) error {
 	return err
 }
 
-func GetDefaultHeaders(contentLen int) headers.Headers {
+func GetDefaultHeaders(contentLen int, contentType string) headers.Headers {
 	return headers.Headers{
 		"Content-Length": strconv.Itoa(contentLen),
 		"Connection":     "close",
-		"Content-Type":   "text/plain",
+		"Content-Type":   contentType,
 	}
 }
 

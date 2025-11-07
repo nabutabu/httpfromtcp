@@ -16,7 +16,7 @@ type HandlerError struct {
 	Message    string
 }
 
-type Handler func(w io.Writer, req *request.Request) *HandlerError
+type Handler func(w io.Writer, req *request.Request)
 
 type Server struct {
 	Addr           string
@@ -67,7 +67,7 @@ func (s *Server) listen() {
 
 func (h *HandlerError) WriteErrorToStream(w io.Writer) {
 	response.WriteStatusLine(w, h.StatusCode)
-	headers := response.GetDefaultHeaders(len(h.Message))
+	headers := response.GetDefaultHeaders(len(h.Message), "text/html")
 	response.WriteHeaders(w, headers)
 
 	w.Write([]byte(h.Message))
@@ -87,16 +87,11 @@ func (s *Server) handle(conn net.Conn) {
 	}
 
 	var buf bytes.Buffer
-	handlerError := s.Handler(&buf, req)
-	if handlerError != nil {
-		handlerError.WriteErrorToStream(conn)
-		return
-	}
+	s.Handler(&buf, req)
 
 	b := buf.Bytes()
-	response.WriteStatusLine(conn, response.OK)
-	headers := response.GetDefaultHeaders(len(b))
-	response.WriteHeaders(conn, headers)
+
+	log.Println(buf.String())
 
 	conn.Write(b)
 
