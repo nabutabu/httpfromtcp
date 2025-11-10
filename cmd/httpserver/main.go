@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"httpFromTcp/internal/request"
 	"httpFromTcp/internal/response"
 	"httpFromTcp/internal/server"
@@ -91,14 +92,13 @@ func handler(w io.Writer, req *request.Request) {
 		headers["Transfer-Encoding"] = "chunked"
 		writer.WriteHeaders(headers)
 
-		log.Println(headers)
-
 		response, err := http.Get(HTTPBIN + strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin"))
 		if err != nil || response == nil {
 			log.Fatal(err)
 		}
 
 		buf := make([]byte, CHUNK_SIZE)
+		var totalBody []byte
 		for {
 			n, err := response.Body.Read(buf)
 			if err != nil {
@@ -112,6 +112,7 @@ func handler(w io.Writer, req *request.Request) {
 
 			log.Printf("Writing %d bytes", n)
 
+			totalBody = append(totalBody, buf[:n]...)
 			_, err = writer.WriteChunkedBody(buf[:n])
 			if err != nil {
 				log.Fatal(err)
@@ -122,6 +123,22 @@ func handler(w io.Writer, req *request.Request) {
 		if err != nil {
 			log.Fatal(err)
 		}
+
+		trailers := make(map[string]string)
+		checkSumStr := sha256.Sum256(totalBody)
+		trailers["X-Content-SHA256"] = string(checkSumStr[:])
+		trailers["X-Content-Length"] = string(len(totalBody))
+
+		return
+	} else if req.RequestLine.RequestTarget == "/video" {
+		writer.WriteStatusLine(200)
+		writer.WriteHeaders(response.GetDefaultHeaders(len(SuccessHTML), "video/mp4"))
+		file, err := os.ReadFile("./assets/vim.mp4")
+		if err != nil {
+			log.Fatal(err)
+		}
+		writer.WriteBody(file)
+
 		return
 	}
 

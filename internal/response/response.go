@@ -14,10 +14,11 @@ const (
 	ClientError StatusCode = 400
 	ServerError StatusCode = 500
 
-	WriterStateInitialized = 0
-	WriterStateStatusDone  = 1
-	WriterStateHeadersDone = 2
-	WriterStateBodyDone    = 3
+	WriterStateInitialized  = 0
+	WriterStateStatusDone   = 1
+	WriterStateHeadersDone  = 2
+	WriterStateBodyDone     = 3
+	WriterStateTrailersDone = 4
 
 	RegisteredNurse string = "\r\n"
 )
@@ -25,6 +26,15 @@ const (
 type Writer struct {
 	W           io.Writer
 	WriterState int
+}
+
+func (writer *Writer) WriteTrailers(h headers.Headers) error {
+	if writer.WriterState != WriterStateBodyDone {
+		return errors.New("/WriteTrailers: Invalid Writer State")
+	}
+
+	writer.WriterState = WriterStateTrailersDone
+	return WriteHeaders(writer.W, h)
 }
 
 func (writer *Writer) WriteChunkedBody(p []byte) (int, error) {
