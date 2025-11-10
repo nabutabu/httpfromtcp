@@ -27,9 +27,31 @@ type Writer struct {
 	WriterState int
 }
 
+func (writer *Writer) WriteChunkedBody(p []byte) (int, error) {
+	if writer.WriterState != WriterStateHeadersDone {
+		return 0, errors.New("/WriteChunkedBody: Invalid writer state" + string(writer.WriterState))
+	}
+
+	lengthLine := []byte(strconv.FormatInt(int64(len(p)), 16) + RegisteredNurse)
+	writer.W.Write(lengthLine)
+
+	writer.W.Write(append(p, RegisteredNurse...))
+
+	return len(p), nil
+}
+
+func (writer *Writer) WriteChunkedBodyDone() (int, error) {
+	lengthLine := []byte("0" + RegisteredNurse)
+	writer.W.Write(lengthLine)
+
+	writer.W.Write([]byte(RegisteredNurse))
+	writer.WriterState = WriterStateBodyDone
+	return 0, nil
+}
+
 func (writer *Writer) WriteStatusLine(statusCode StatusCode) error {
 	if writer.WriterState != WriterStateInitialized {
-		return errors.New("Invalid writer state")
+		return errors.New("/WriteStatusLine: Invalid writer state")
 	}
 	writer.WriterState = WriterStateStatusDone
 	return WriteStatusLine(writer.W, statusCode)
@@ -37,7 +59,7 @@ func (writer *Writer) WriteStatusLine(statusCode StatusCode) error {
 
 func (writer *Writer) WriteHeaders(headers headers.Headers) error {
 	if writer.WriterState != WriterStateStatusDone {
-		return errors.New("Invalid writer state")
+		return errors.New("/WriteHeaders: Invalid writer state")
 	}
 	writer.WriterState = WriterStateHeadersDone
 	return WriteHeaders(writer.W, headers)

@@ -6,8 +6,10 @@ import (
 	"httpFromTcp/internal/server"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 )
 
@@ -43,6 +45,9 @@ const (
     <p>Your request was an absolute banger.</p>
   </body>
 </html>`
+
+	HTTPBIN    = `https://httpbin.org`
+	CHUNK_SIZE = 1024
 )
 
 func main() {
@@ -67,7 +72,6 @@ func handler(w io.Writer, req *request.Request) {
 	}
 
 	if req.RequestLine.RequestTarget == "/yourProblem" {
-
 		writer.WriteStatusLine(400)
 		writer.WriteHeaders(response.GetDefaultHeaders(len(BadRequestHTML), "text/html"))
 		writer.WriteBody([]byte(BadRequestHTML))
@@ -77,6 +81,47 @@ func handler(w io.Writer, req *request.Request) {
 		writer.WriteStatusLine(500)
 		writer.WriteHeaders(response.GetDefaultHeaders(len(ServerErrorHTML), "text/html"))
 		writer.WriteBody([]byte(ServerErrorHTML))
+
+		return
+	} else if strings.HasPrefix(req.RequestLine.RequestTarget, "/httpbin") {
+		writer.WriteStatusLine(200)
+		// get then change headers
+		headers := response.GetDefaultHeaders(len(SuccessHTML), "text/html")
+		delete(headers, "Content-Length")
+		headers["Transfer-Encoding"] = "chunked"
+		writer.WriteHeaders(headers)
+
+		log.Println(headers)
+
+		response, err := http.Get(HTTPBIN + strings.TrimPrefix(req.RequestLine.RequestTarget, "/httpbin"))
+		if err != nil || response == nil {
+			log.Fatal(err)
+		}
+
+		buf := make([]byte, CHUNK_SIZE)
+		for {
+			n, err := response.Body.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					log.Println("EOF Reached")
+				} else {
+					log.Fatal("Error reading resopnse from httpbin.org")
+				}
+				break
+			}
+
+			log.Printf("Writing %d bytes", n)
+
+			_, err = writer.WriteChunkedBody(buf[:n])
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		_, err = writer.WriteChunkedBodyDone()
+		if err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 

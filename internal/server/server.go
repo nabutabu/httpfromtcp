@@ -91,8 +91,6 @@ func (s *Server) handle(conn net.Conn) {
 
 	b := buf.Bytes()
 
-	log.Println(buf.String())
-
 	conn.Write(b)
 
 	log.Println("Response sent. Closing Connection.")
