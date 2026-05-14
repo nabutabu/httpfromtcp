@@ -16,7 +16,7 @@ func TestRecordRoundtrip(t *testing.T) {
 	}{
 		{
 			name:        "handshake with data",
-			contentType: Handshake,
+			contentType: ContentTypeHandshake,
 			data:        []byte{0x01, 0x02, 0x03},
 		},
 		{
@@ -31,7 +31,7 @@ func TestRecordRoundtrip(t *testing.T) {
 		},
 		{
 			name:        "handshake with empty data",
-			contentType: Handshake,
+			contentType: ContentTypeHandshake,
 			data:        []byte(nil),
 		},
 		{
