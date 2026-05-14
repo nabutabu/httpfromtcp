@@ -11,10 +11,10 @@ type State int
 type RecordVersion string
 
 const (
-	ChangeCipherSpec ContentType = ContentType(20)
-	Alert            ContentType = ContentType(21)
-	Handshake        ContentType = ContentType(22)
-	ApplicationData  ContentType = ContentType(23)
+	ChangeCipherSpec     ContentType = ContentType(20)
+	Alert                ContentType = ContentType(21)
+	ContentTypeHandshake ContentType = ContentType(22)
+	ApplicationData      ContentType = ContentType(23)
 
 	TLS13 RecordVersion = "\x03\x04"
 
@@ -44,7 +44,7 @@ func (r *TLSPlainText) parseSingle(data []byte) (int, error) {
 
 		// parse ContentType which is 1 byte
 		contentType := ContentType(data[0])
-		if contentType != ChangeCipherSpec && contentType != Alert && contentType != Handshake && contentType != ApplicationData {
+		if contentType != ChangeCipherSpec && contentType != Alert && contentType != ContentTypeHandshake && contentType != ApplicationData {
 			return 0, errors.New("Invalid ContentType")
 		}
 
@@ -171,7 +171,7 @@ func writeRecord(w io.Writer, contentType ContentType, data []byte) error {
 	var res []byte
 	res = append(res, byte(contentType))
 	res = append(res, TLS13...)
-	
+
 	size := make([]byte, 2)
 	binary.BigEndian.PutUint16(size, uint16(len(data)))
 
