@@ -31,7 +31,7 @@ func Serve(port int, handler Handler) (*Server, error) {
 		return nil, err
 	}
 
-	server := Server{Addr: "localhost:" + string(port), Listener: listener, Handler: handler}
+	server := Server{Addr: "localhost:" + strconv.Itoa(port), Listener: listener, Handler: handler}
 	server.IsServerClosed.Store(false)
 
 	go server.listen()

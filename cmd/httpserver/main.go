@@ -7,6 +7,7 @@ import (
 	"httpFromTcp/internal/server"
 	"io"
 	"log"
+	"strconv"
 	"net/http"
 	"os"
 	"os/signal"
@@ -127,7 +128,7 @@ func handler(w io.Writer, req *request.Request) {
 		trailers := make(map[string]string)
 		checkSumStr := sha256.Sum256(totalBody)
 		trailers["X-Content-SHA256"] = string(checkSumStr[:])
-		trailers["X-Content-Length"] = string(len(totalBody))
+		trailers["X-Content-Length"] = strconv.Itoa(len(totalBody))
 
 		return
 	} else if req.RequestLine.RequestTarget == "/video" {

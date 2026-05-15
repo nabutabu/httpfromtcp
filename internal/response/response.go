@@ -39,7 +39,7 @@ func (writer *Writer) WriteTrailers(h headers.Headers) error {
 
 func (writer *Writer) WriteChunkedBody(p []byte) (int, error) {
 	if writer.WriterState != WriterStateHeadersDone {
-		return 0, errors.New("/WriteChunkedBody: Invalid writer state" + string(writer.WriterState))
+		return 0, errors.New("/WriteChunkedBody: Invalid writer state" + strconv.Itoa(writer.WriterState))
 	}
 
 	lengthLine := []byte(strconv.FormatInt(int64(len(p)), 16) + RegisteredNurse)
