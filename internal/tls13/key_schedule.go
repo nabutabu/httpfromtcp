@@ -3,6 +3,7 @@ package tls13
 import (
 	"crypto/hkdf"
 	"crypto/hmac"
+	"crypto/sha256"
 	"hash"
 )
 
@@ -10,6 +11,49 @@ type HkdfLabel struct {
 	size    uint16 // 2 bytes big-endian: the desired output length
 	label   byte   // 1-byte length prefix, then "tls13 " + label_string
 	context byte   // 1-byte length prefix, then the context bytes
+}
+
+type KeySet struct {
+    ClientHandshakeTrafficSecret   []byte
+    ServerHandshakeTrafficSecret   []byte
+    ClientApplicationTrafficSecret []byte
+    ServerApplicationTrafficSecret []byte
+    ServerHandshakeKeys            CipherKeys
+    ServerApplicationKeys          CipherKeys
+    ClientHandshakeKeys            CipherKeys
+    ClientApplicationKeys          CipherKeys
+    ResumptionMasterSecret         []byte
+}
+
+type CipherKeys struct {
+    Key []byte   // 16 bytes for AES-128
+    Iv  []byte   // 12 bytes
+}
+
+func DeriveEarlySecret(psk []byte) []byte {
+	return hkdfExtract(nil, psk, sha256.New)
+}
+
+func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) []byte {
+	salt := deriveSecret(earlySecret, "derived", sha256.New)
+	return hkdfExtract(salt, sharedSecret, sha256.New)
+}
+
+func DeriveMasterSecret(handshakeSecret []byte) []byte {
+	salt := deriveSecret(handshakeSecret, "derived", sha256.New)
+	return hkdfExtract(salt, nil, sha256.New)
+}
+
+func deriveSecret(secret []byte, label string, hash func() hash.Hash) []byte {
+	emptyHash := hash().Sum(nil)
+	return hkdfExpandLabel(secret, label, emptyHash, hash().Size(), hash)
+}
+
+func DeriveTrafficKeys(secret []byte, label string, transcriptHash []byte) CipherKeys {
+	return CipherKeys{
+		Key: hkdfExpandLabel(secret, "key", transcriptHash, 16, sha256.New),
+		Iv:  hkdfExpandLabel(secret, "iv", transcriptHash, 12, sha256.New),
+	}
 }
 
 func hkdfExtract(salt, ikm []byte, hash func() hash.Hash) []byte {
