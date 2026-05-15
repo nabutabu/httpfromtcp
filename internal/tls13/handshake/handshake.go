@@ -28,14 +28,14 @@ const (
 )
 
 type Handshake struct {
-	msg_type HandshakeType
-	length   uint16 // why is this uint24 in the spec, what is the golang equivalent
-	msg      []byte
-	State    State
+	msg_type       HandshakeType
+	length         uint16 // why is this uint24 in the spec, what is the golang equivalent
+	msg            []byte
+	HandshakeState State
 }
 
 func (hs *Handshake) parseSingle(data []byte) (int, error) {
-	switch hs.State {
+	switch hs.HandshakeState {
 
 	case HandshakeInitialized:
 		// parse HandshakeType
@@ -54,7 +54,7 @@ func (hs *Handshake) parseSingle(data []byte) (int, error) {
 		}
 
 		hs.msg_type = hsType
-		hs.State = HandshakeMsgTypeDone
+		hs.HandshakeState = HandshakeMsgTypeDone
 
 		return 1, nil
 	case HandshakeMsgTypeDone:
@@ -66,7 +66,7 @@ func (hs *Handshake) parseSingle(data []byte) (int, error) {
 		size := binary.BigEndian.Uint16(data[0:2])
 
 		hs.length = size
-		hs.State = HandshakeLengthDone
+		hs.HandshakeState = HandshakeLengthDone
 		return 2, nil
 	case HandshakeLengthDone:
 		// parse fragment contents
@@ -77,7 +77,7 @@ func (hs *Handshake) parseSingle(data []byte) (int, error) {
 		hs.msg = append(hs.msg, data...)
 
 		if len(hs.msg) == int(hs.length) {
-			hs.State = HandshakeComplete
+			hs.HandshakeState = HandshakeComplete
 			return len(data), nil
 		}
 
@@ -91,7 +91,7 @@ func (hs *Handshake) Parse(data []byte) (int, error) {
 	// (both request line and headers for ex)
 	// run the loop until either the entire request is parsed or all bytes are consumed
 	bytesParsed := 0
-	for hs.State != HandshakeComplete {
+	for hs.HandshakeState != HandshakeComplete {
 		n, err := hs.parseSingle(data[bytesParsed:])
 		if err != nil {
 			return bytesParsed, err

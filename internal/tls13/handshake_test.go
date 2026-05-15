@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"httpFromTcp/internal/tls13/handshake"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,7 +57,7 @@ func TestHandshakeRoundtrip(t *testing.T) {
 
 			hs, err := readHandshake(buf)
 			require.NoError(t, err)
-			assert.Equal(t, handshake.HandshakeComplete, hs.State)
+			assert.Equal(t, handshake.HandshakeComplete, hs.HandshakeState)
 		})
 	}
 }
@@ -74,7 +75,7 @@ func TestHandshakeRoundtripLargePayload(t *testing.T) {
 
 	hs, err := readHandshake(buf)
 	require.NoError(t, err)
-	assert.Equal(t, handshake.HandshakeComplete, hs.State)
+	assert.Equal(t, handshake.HandshakeComplete, hs.HandshakeState)
 }
 
 func TestHandshakeReadInvalidType(t *testing.T) {
