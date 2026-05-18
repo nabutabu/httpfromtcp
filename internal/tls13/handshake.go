@@ -1,6 +1,11 @@
 package tls13
 
 import (
+	"crypto"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"httpFromTcp/internal/tls13/client_hello"
@@ -9,12 +14,97 @@ import (
 )
 
 type ServerHello struct {
-    LegacyVersion     [2]byte  // always 0x0303
-    Random            [32]byte
-    LegacySessionID   []byte   // echo client's session ID
-    CipherSuite       [2]byte  // 0x1301 for TLS_AES_128_GCM_SHA256
-    LegacyCompression byte     // 0x00
-    Extensions        []client_hello.Extension
+	LegacyVersion     [2]byte // always 0x0303
+	Random            [32]byte
+	LegacySessionID   []byte  // echo client's session ID
+	CipherSuite       [2]byte // 0x1301 for TLS_AES_128_GCM_SHA256
+	LegacyCompression byte    // 0x00
+	Extensions        []client_hello.Extension
+}
+
+type SignatureScheme uint16
+
+const (
+	RSASSA_PSS_RSAE_SHA256 SignatureScheme = 0x0804
+	ECDSA_SECP256R1_SHA256 SignatureScheme = 0x0403
+)
+
+func computeFinishedKey(trafficSecret []byte) []byte {
+	//finished_key = HKDF-Expand-Label(traffic_secret, "finished", "", hash.Size)
+	
+	return hkdfExpandLabel(trafficSecret, "Finished", []byte(""), sha256.New().Size(), sha256.New)
+}
+
+func computeVerifyData(finishedKey []byte, transcriptHash []byte) []byte {
+	mac := hmac.New(sha256.New, finishedKey)
+	mac.Write(transcriptHash)
+	return mac.Sum(nil)
+}
+
+func marshalFinished(verifyData []byte) []byte {
+	var buf []byte
+	buf = append(buf, 0x14)
+	length := make([]byte, 2)
+	binary.BigEndian.PutUint16(length, uint16(len(verifyData)))
+	buf = append(buf, length...)
+	buf = append(buf, verifyData...)
+	return buf
+}
+
+func signCertificateVerify(privKey crypto.PrivateKey, transcriptHash []byte, scheme SignatureScheme) ([]byte, error) {
+	content := make([]byte, 64)
+	for i := range content {
+		content[i] = 0x20
+	}
+	content = append(content, "TLS 1.3, server CertificateVerify"...)
+	content = append(content, 0x00)
+	content = append(content, transcriptHash...)
+
+	hash := sha256.Sum256(content)
+	digest := hash[:]
+
+	signer, ok := privKey.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("private key does not implement crypto.Signer")
+	}
+
+	var opts crypto.SignerOpts
+	switch scheme {
+	case ECDSA_SECP256R1_SHA256:
+		opts = crypto.SHA256
+	case RSASSA_PSS_RSAE_SHA256:
+		opts = &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
+	default:
+		return nil, errors.New("unsupported signature scheme")
+	}
+
+	return signer.Sign(rand.Reader, digest, opts)
+}
+
+func marshalCertificateVerify(signature []byte, scheme SignatureScheme) []byte {
+	var buf []byte
+	schemeBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(schemeBytes, uint16(scheme))
+	buf = append(buf, schemeBytes...)
+	sigLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(sigLen, uint16(len(signature)))
+	buf = append(buf, sigLen...)
+	buf = append(buf, signature...)
+	return buf
+}
+
+func unmarshalCertificateVerify(data []byte) (signature []byte, scheme SignatureScheme, err error) {
+	if len(data) < 4 {
+		return nil, 0, errors.New("data too short for CertificateVerify")
+	}
+	scheme = SignatureScheme(binary.BigEndian.Uint16(data[0:2]))
+	sigLen := binary.BigEndian.Uint16(data[2:4])
+	if len(data) < int(4+sigLen) {
+		return nil, 0, errors.New("data too short for CertificateVerify signature")
+	}
+	signature = make([]byte, sigLen)
+	copy(signature, data[4:4+sigLen])
+	return signature, scheme, nil
 }
 
 func NewServerHello(random [32]byte, sessionID []byte, cipherSuite uint16, keyShare client_hello.KeyShareEntry) []byte {
