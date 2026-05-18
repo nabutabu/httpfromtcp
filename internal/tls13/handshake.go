@@ -8,6 +8,59 @@ import (
 	"io"
 )
 
+type ServerHello struct {
+    LegacyVersion     [2]byte  // always 0x0303
+    Random            [32]byte
+    LegacySessionID   []byte   // echo client's session ID
+    CipherSuite       [2]byte  // 0x1301 for TLS_AES_128_GCM_SHA256
+    LegacyCompression byte     // 0x00
+    Extensions        []client_hello.Extension
+}
+
+func NewServerHello(random [32]byte, sessionID []byte, cipherSuite uint16, keyShare client_hello.KeyShareEntry) []byte {
+	var buf []byte
+
+	buf = append(buf, 0x03, 0x03)
+
+	buf = append(buf, random[:]...)
+
+	buf = append(buf, byte(len(sessionID)))
+	buf = append(buf, sessionID...)
+
+	cs := make([]byte, 2)
+	binary.BigEndian.PutUint16(cs, cipherSuite)
+	buf = append(buf, cs...)
+
+	buf = append(buf, 0x00)
+
+	var exts []byte
+
+	sv := make([]byte, 4)
+	binary.BigEndian.PutUint16(sv[0:2], 43)
+	binary.BigEndian.PutUint16(sv[2:4], 2)
+	exts = append(exts, sv...)
+	exts = append(exts, 0x03, 0x04)
+
+	ksHeader := make([]byte, 4)
+	binary.BigEndian.PutUint16(ksHeader[0:2], 51)
+	binary.BigEndian.PutUint16(ksHeader[2:4], uint16(4+len(keyShare.KeyExchange)))
+	exts = append(exts, ksHeader...)
+	group := make([]byte, 2)
+	binary.BigEndian.PutUint16(group, keyShare.Group)
+	exts = append(exts, group...)
+	keyLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(keyLen, uint16(len(keyShare.KeyExchange)))
+	exts = append(exts, keyLen...)
+	exts = append(exts, keyShare.KeyExchange...)
+
+	extLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(extLen, uint16(len(exts)))
+	buf = append(buf, extLen...)
+	buf = append(buf, exts...)
+
+	return buf
+}
+
 func readClientHello(r io.Reader) (*client_hello.ClientHello, error) {
 	buf := make([]byte, 8)
 	clientHello := client_hello.ClientHello{}

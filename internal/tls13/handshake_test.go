@@ -1,93 +1,83 @@
 package tls13
 
 import (
-	"bytes"
 	"testing"
 
-	"httpFromTcp/internal/tls13/handshake"
+	"httpFromTcp/internal/tls13/client_hello"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestHandshakeRoundtrip(t *testing.T) {
-	tests := []struct {
-		name    string
-		msgType byte
-		data    []byte
-	}{
-		{
-			name:    "client hello with data",
-			msgType: byte(1),
-			data:    []byte{0x01, 0x02, 0x03},
-		},
-		{
-			name:    "server hello with text",
-			msgType: byte(2),
-			data:    []byte("hello tls 1.3"),
-		},
-		{
-			name:    "certificate with binary payload",
-			msgType: byte(11),
-			data:    []byte{0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe},
-		},
-		{
-			name:    "finished with single byte",
-			msgType: byte(20),
-			data:    []byte{0x00},
-		},
-		{
-			name:    "encrypted extensions with empty data",
-			msgType: byte(8),
-			data:    []byte(nil),
-		},
-		{
-			name:    "new session ticket with mixed data",
-			msgType: byte(4),
-			data:    []byte("session-ticket-data"),
+func TestNewServerHello(t *testing.T) {
+	random := [32]byte{}
+	for i := range random {
+		random[i] = byte(i)
+	}
+	sessionID := []byte{0x01, 0x02, 0x03}
+	cipherSuite := uint16(0x1301)
+	keyShare := client_hello.KeyShareEntry{
+		Group: 0x001D,
+		KeyExchange: []byte{
+			0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+			0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+			0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+			0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			buf := new(bytes.Buffer)
+	result := NewServerHello(random, sessionID, cipherSuite, keyShare)
 
-			err := writeHandshake(buf, tt.msgType, tt.data)
-			require.NoError(t, err)
+	assert.Equal(t, byte(0x03), result[0])
+	assert.Equal(t, byte(0x03), result[1])
 
-			hs, err := readHandshake(buf)
-			require.NoError(t, err)
-			assert.Equal(t, handshake.HandshakeComplete, hs.HandshakeState)
-		})
-	}
-}
-
-func TestHandshakeRoundtripLargePayload(t *testing.T) {
-	payload := make([]byte, 1<<14)
-	for i := range payload {
-		payload[i] = byte(i)
+	for i := 0; i < 32; i++ {
+		assert.Equal(t, byte(i), result[2+i])
 	}
 
-	buf := new(bytes.Buffer)
+	assert.Equal(t, byte(3), result[34])
+	assert.Equal(t, []byte{0x01, 0x02, 0x03}, result[35:38])
 
-	err := writeHandshake(buf, byte(11), payload)
-	require.NoError(t, err)
+	assert.Equal(t, byte(0x13), result[38])
+	assert.Equal(t, byte(0x01), result[39])
 
-	hs, err := readHandshake(buf)
-	require.NoError(t, err)
-	assert.Equal(t, handshake.HandshakeComplete, hs.HandshakeState)
+	assert.Equal(t, byte(0x00), result[40])
+
+	extLen := int(result[41])<<8 | int(result[42])
+	assert.Equal(t, len(result)-43, extLen)
+
+	extData := result[43:]
+	offset := 0
+
+	assert.Equal(t, byte(0x00), extData[offset])
+	assert.Equal(t, byte(0x2b), extData[offset+1])
+	svDataLen := int(extData[offset+2])<<8 | int(extData[offset+3])
+	assert.Equal(t, 2, svDataLen)
+	assert.Equal(t, byte(0x03), extData[offset+4])
+	assert.Equal(t, byte(0x04), extData[offset+5])
+	offset += 4 + svDataLen
+
+	assert.Equal(t, byte(0x00), extData[offset])
+	assert.Equal(t, byte(0x33), extData[offset+1])
+	ksDataLen := int(extData[offset+2])<<8 | int(extData[offset+3])
+	assert.Equal(t, 4+len(keyShare.KeyExchange), ksDataLen)
+	assert.Equal(t, byte(0x00), extData[offset+4])
+	assert.Equal(t, byte(0x1D), extData[offset+5])
+	ksKeyLen := int(extData[offset+6])<<8 | int(extData[offset+7])
+	assert.Equal(t, len(keyShare.KeyExchange), ksKeyLen)
+	assert.Equal(t, keyShare.KeyExchange, extData[offset+8:offset+8+ksKeyLen])
 }
 
-func TestHandshakeReadInvalidType(t *testing.T) {
-	buf := new(bytes.Buffer)
-	buf.Write([]byte{0xFF, 0x00, 0x01, 0x00})
-	_, err := readHandshake(buf)
-	require.Error(t, err)
-}
+func TestNewServerHelloEmptySessionID(t *testing.T) {
+	random := [32]byte{}
+	cipherSuite := uint16(0x1302)
+	keyShare := client_hello.KeyShareEntry{
+		Group:       0x0017,
+		KeyExchange: []byte{0xaa, 0xbb},
+	}
 
-func TestHandshakeReadTruncated(t *testing.T) {
-	buf := new(bytes.Buffer)
-	buf.Write([]byte{0x01, 0x00, 0x05, 0x01, 0x02})
-	_, err := readHandshake(buf)
-	require.Error(t, err)
+	result := NewServerHello(random, []byte{}, cipherSuite, keyShare)
+
+	assert.Equal(t, byte(0x00), result[34])
+	assert.Equal(t, byte(0x13), result[35])
+	assert.Equal(t, byte(0x02), result[36])
 }
