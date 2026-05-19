@@ -49,10 +49,10 @@ func deriveSecret(secret []byte, label string, hash func() hash.Hash) []byte {
 	return hkdfExpandLabel(secret, label, emptyHash, hash().Size(), hash)
 }
 
-func DeriveTrafficKeys(secret []byte, label string, transcriptHash []byte) CipherKeys {
+func DeriveTrafficKeys(secret []byte) CipherKeys {
 	return CipherKeys{
-		Key: hkdfExpandLabel(secret, "key", transcriptHash, 16, sha256.New),
-		Iv:  hkdfExpandLabel(secret, "iv", transcriptHash, 12, sha256.New),
+		Key: hkdfExpandLabel(secret, "key", []byte{}, 16, sha256.New),
+		Iv:  hkdfExpandLabel(secret, "iv", []byte{}, 12, sha256.New),
 	}
 }
 

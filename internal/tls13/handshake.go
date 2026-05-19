@@ -151,37 +151,19 @@ func NewServerHello(random [32]byte, sessionID []byte, cipherSuite uint16, keySh
 	return buf
 }
 
-func readClientHello(r io.Reader) (*client_hello.ClientHello, error) {
-	buf := make([]byte, 8)
+func readClientHello(clientHelloData []byte) (*client_hello.ClientHello, error) {
 	clientHello := client_hello.ClientHello{}
-	var line string
-	var bytesRead int
-	var bytesParsed int
 
-	for {
-		if clientHello.ClientHelloState == int(client_hello.ClientHelloCompleted) {
-			return &clientHello, nil
-		}
-
-		// if there is a request in flight read more bytes
-		n, err := r.Read(buf)
-		if err != nil {
-			return nil, errors.New("Error reading data")
-		}
-
-		line += string(buf[:n])
-		bytesRead += n
-
-		// received some amount of text
-		bytes, err := clientHello.Parse([]byte(line))
-		if err != nil {
-			return nil, err
-		}
-
-		// after parsing set line to the remainder of parts
-		bytesParsed += bytes
-		line = line[bytes:]
+	_, err := clientHello.Parse(clientHelloData)
+	if err != nil {
+		return nil, err
 	}
+
+	if clientHello.ClientHelloState != int(client_hello.ClientHelloCompleted) {
+		return nil, errors.New("incomplete ClientHello data")
+	}
+
+	return &clientHello, nil
 }
 
 /**
