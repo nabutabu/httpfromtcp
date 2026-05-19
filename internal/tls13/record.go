@@ -16,7 +16,7 @@ const (
 	ContentTypeHandshake ContentType = ContentType(22)
 	ApplicationData      ContentType = ContentType(23)
 
-	TLS13 RecordVersion = "\x03\x04"
+	TLS13 RecordVersion = "\x03\x03"
 
 	Initialized     State = 0
 	ContentTypeDone State = 1
