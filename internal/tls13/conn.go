@@ -27,18 +27,14 @@ type Config struct {
 }
 
 type Conn struct {
-	rawConn      net.Conn
-	config       *Config
-	state        serverState
-	handshakeErr error
+	rawConn net.Conn
+	config  *Config
+	state   serverState
 
 	// Handshake state
-	clientHello            *client_hello.ClientHello
-	transcriptHash         hash.Hash // running SHA-256, updated as messages are sent/received
-	serverRandom           [32]byte
-	ecdhePrivate           []byte
-	keys                   *KeySet
-	serverHsTrafficSecret  []byte
+	transcriptHash        hash.Hash
+	serverHsTrafficSecret []byte
+	clientHsTrafficSecret []byte
 
 	// Record protection
 	readKeys    *CipherKeys
@@ -46,8 +42,8 @@ type Conn struct {
 	readSeqNum  uint64
 	writeSeqNum uint64
 
-	// Buffered data
-	readBuf bytes.Buffer // decrypted but not yet consumed
+	// Buffered plaintext not yet consumed by Read()
+	readBuf bytes.Buffer
 }
 
 func (c *Conn) writeEncryptedRecord(contentType ContentType, data []byte) error {
@@ -55,236 +51,255 @@ func (c *Conn) writeEncryptedRecord(contentType ContentType, data []byte) error 
 	if err != nil {
 		return err
 	}
-
 	if err := writeRecord(c.rawConn, ApplicationData, ciphertext); err != nil {
 		return err
 	}
-
 	c.writeSeqNum++
 	return nil
 }
 
 func (c *Conn) Handshake() error {
-	for {
-		contentType, data, err := readRecord(c.rawConn)
+	// -------------------------------------------------------------------------
+	// Phase 1: Read ClientHello
+	// -------------------------------------------------------------------------
+	contentType, data, err := readRecord(c.rawConn)
+	if err != nil {
+		return err
+	}
+	if contentType != ContentTypeHandshake {
+		return errors.New("expected handshake record")
+	}
+	if data[0] != 0x01 {
+		return errors.New("expected ClientHello")
+	}
+
+	clientHello, err := readClientHello(data[4:])
+	if err != nil {
+		return err
+	}
+
+	c.transcriptHash = sha256.New()
+	c.transcriptHash.Write(data) // feed full handshake bytes (header + body)
+
+	// -------------------------------------------------------------------------
+	// Phase 2: ECDHE key exchange
+	// -------------------------------------------------------------------------
+	var curve CurveID
+	var clientPubKey []byte
+	for _, ks := range clientHello.KeyShare {
+		if ks.Group == 0x001D { // X25519 preferred
+			curve, clientPubKey = CurveID(ks.Group), ks.KeyExchange
+			break
+		} else if ks.Group == 0x0017 { // P-256 fallback
+			curve, clientPubKey = CurveID(ks.Group), ks.KeyExchange
+		}
+	}
+
+	privKey, pubKey, err := GenerateKeyShare(curve)
+	if err != nil {
+		return err
+	}
+
+	sharedSecret, err := ComputeSharedSecret(privKey, clientPubKey, curve)
+	if err != nil {
+		return err
+	}
+
+	// -------------------------------------------------------------------------
+	// Phase 2: Key schedule — up to HandshakeSecret
+	// -------------------------------------------------------------------------
+	earlySecret := DeriveEarlySecret(make([]byte, 32))
+	handshakeSecret := DeriveHandshakeSecret(earlySecret, sharedSecret)
+
+	// -------------------------------------------------------------------------
+	// Phase 3: Build and send ServerHello (plaintext)
+	// -------------------------------------------------------------------------
+	var serverRandom [32]byte
+	if _, err = rand.Read(serverRandom[:]); err != nil {
+		return err
+	}
+
+	serverHelloBody := NewServerHello(serverRandom, clientHello.LegacySessionID, 0x1301, client_hello.KeyShareEntry{
+		Group:       uint16(curve),
+		KeyExchange: pubKey,
+	})
+	serverHello := buildHandshakeMessage(0x02, serverHelloBody)
+
+	c.transcriptHash.Write(serverHello)
+
+	// Snapshot after ServerHello — used to derive handshake traffic secrets
+	snapshotAfterServerHello := c.transcriptHash.Sum(nil)
+
+	c.serverHsTrafficSecret = hkdfExpandLabel(handshakeSecret, "s hs traffic", snapshotAfterServerHello, 32, sha256.New)
+	c.clientHsTrafficSecret = hkdfExpandLabel(handshakeSecret, "c hs traffic", snapshotAfterServerHello, 32, sha256.New)
+
+	serverHsKeys := DeriveTrafficKeys(c.serverHsTrafficSecret)
+	clientHsKeys := DeriveTrafficKeys(c.clientHsTrafficSecret)
+
+	if err := writeRecord(c.rawConn, ContentTypeHandshake, serverHello); err != nil {
+		return err
+	}
+
+	// Middlebox compatibility: send ChangeCipherSpec before encrypted records
+	if err := writeRecord(c.rawConn, ChangeCipherSpec, []byte{0x01}); err != nil {
+		return err
+	}
+
+	// Arm write path — everything from here is encrypted
+	c.writeKeys = &serverHsKeys
+
+	// -------------------------------------------------------------------------
+	// Phase 4: Encrypted server flight
+	// -------------------------------------------------------------------------
+
+	// 4.2 EncryptedExtensions (empty)
+	encryptedExtensions := []byte{0x08, 0x00, 0x00, 0x02, 0x00, 0x00}
+	c.transcriptHash.Write(encryptedExtensions)
+	if err := c.writeEncryptedRecord(ContentTypeHandshake, encryptedExtensions); err != nil {
+		return err
+	}
+
+	// 4.3 Certificate
+	certHandshake, err := c.buildCertificateMessage()
+	if err != nil {
+		return err
+	}
+	c.transcriptHash.Write(certHandshake)
+	if err := c.writeEncryptedRecord(ContentTypeHandshake, certHandshake); err != nil {
+		return err
+	}
+
+	// 4.4 CertificateVerify
+	var scheme SignatureScheme
+	switch c.config.Certificate.PrivateKey.(type) {
+	case *rsa.PrivateKey:
+		scheme = RSASSA_PSS_RSAE_SHA256
+	case *ecdsa.PrivateKey:
+		scheme = ECDSA_SECP256R1_SHA256
+	default:
+		return errors.New("unsupported private key type")
+	}
+
+	transcriptForCertVerify := c.transcriptHash.Sum(nil)
+	signature, err := signCertificateVerify(c.config.Certificate.PrivateKey, transcriptForCertVerify, scheme)
+	if err != nil {
+		return err
+	}
+
+	certVerifyHandshake := buildHandshakeMessage(0x0F, marshalCertificateVerify(signature, scheme))
+	c.transcriptHash.Write(certVerifyHandshake)
+	if err := c.writeEncryptedRecord(ContentTypeHandshake, certVerifyHandshake); err != nil {
+		return err
+	}
+
+	// 4.5 Server Finished
+	snapshotBeforeServerFinished := c.transcriptHash.Sum(nil)
+	serverFinishedKey := computeFinishedKey(c.serverHsTrafficSecret)
+	serverVerifyData := computeVerifyData(serverFinishedKey, snapshotBeforeServerFinished)
+
+	serverFinished := buildHandshakeMessage(0x14, serverVerifyData)
+	c.transcriptHash.Write(serverFinished)
+	if err := c.writeEncryptedRecord(ContentTypeHandshake, serverFinished); err != nil {
+		return err
+	}
+
+	// -------------------------------------------------------------------------
+	// Phase 5: Derive application traffic keys
+	// -------------------------------------------------------------------------
+
+	// Snapshot AFTER server Finished is in the transcript — required for app secrets
+	snapshotAfterServerFinished := c.transcriptHash.Sum(nil)
+
+	masterSecret := DeriveMasterSecret(handshakeSecret)
+	clientAppSecret := hkdfExpandLabel(masterSecret, "c ap traffic", snapshotAfterServerFinished, 32, sha256.New)
+	serverAppSecret := hkdfExpandLabel(masterSecret, "s ap traffic", snapshotAfterServerFinished, 32, sha256.New)
+
+	clientAppKeys := DeriveTrafficKeys(clientAppSecret)
+	serverAppKeys := DeriveTrafficKeys(serverAppSecret)
+
+	// Switch write path to application keys
+	c.writeKeys = &serverAppKeys
+	c.writeSeqNum = 0
+
+	// -------------------------------------------------------------------------
+	// Phase 5: Read and verify client Finished
+	// -------------------------------------------------------------------------
+
+	// Discard optional ChangeCipherSpec
+	nextContentType, nextData, err := readRecord(c.rawConn)
+	if err != nil {
+		return err
+	}
+	if nextContentType == ChangeCipherSpec {
+		nextContentType, nextData, err = readRecord(c.rawConn)
 		if err != nil {
 			return err
 		}
-
-		if contentType == ContentTypeHandshake {
-			// get handshake type from first byte
-			handshakeType := data[0]
-			if handshakeType != 0x01 {
-				return errors.New("invalid handshake type")
-			}
-
-			// get client hello
-			// first 4 bytes of data = handshakeType (1) + length (3)
-			clientHelloRaw := data[4:]
-			clientHello, err := readClientHello(clientHelloRaw)
-			if err != nil {
-				return err
-			}
-
-			c.transcriptHash = sha256.New()
-			c.transcriptHash.Write(data)
-
-			// find what curve client offered in keyshare
-			// take the first one that you see between X25519 and secp256r1
-			var curve CurveID
-			var clientPubKey []byte
-			for _, ks := range clientHello.KeyShare {
-				if ks.Group == 0x001D { // X25519 — preferred
-					curve = CurveID(ks.Group)
-					clientPubKey = ks.KeyExchange
-					break
-				} else if ks.Group == 0x0017 { // P-256 — fallback
-					curve = CurveID(ks.Group)
-					clientPubKey = ks.KeyExchange
-				}
-			}
-
-			// generate Key share
-			privKey, pubKey, err := GenerateKeyShare(curve)
-			if err != nil {
-				return err
-			}
-
-			// store privKey
-			c.ecdhePrivate = privKey
-
-			// create shared secret
-			sharedSecret, err := ComputeSharedSecret(privKey, clientPubKey, curve)
-			if err != nil {
-				return err
-			}
-
-			// KeySchedule
-			earlySecret := DeriveEarlySecret(make([]byte, 32))
-			handshakeSecret := DeriveHandshakeSecret(earlySecret, sharedSecret)
-
-
-			// create serverHello
-			var serverRandom [32]byte
-			if _, err = rand.Read(serverRandom[:]); err != nil {
-				return err
-			}
-			serverHelloRaw := NewServerHello(serverRandom, clientHello.LegacySessionID, 0x1301, client_hello.KeyShareEntry{
-				Group: uint16(curve),
-				KeyExchange: pubKey,
-			})
-
-			serverHello := append([]byte{0x02, byte(len(serverHelloRaw) >> 16), byte(len(serverHelloRaw) >> 8), byte(len(serverHelloRaw))}, serverHelloRaw...)
-
-			c.transcriptHash.Write(serverHello)
-
-			snapshot := c.transcriptHash.Sum(nil)
-
-			c.serverHsTrafficSecret = hkdfExpandLabel(handshakeSecret, "s hs traffic", snapshot, 32, sha256.New)
-			clientHsTrafficSecret := hkdfExpandLabel(handshakeSecret, "c hs traffic", snapshot, 32, sha256.New)
-
-			serverHsKeys := DeriveTrafficKeys(c.serverHsTrafficSecret)
-			clientHsKeys := DeriveTrafficKeys(clientHsTrafficSecret)
-
-			c.writeKeys = &serverHsKeys
-			c.readKeys = &clientHsKeys
-			
-			// Wrap ServerHello in a TLS record and write it
-			if err := writeRecord(c.rawConn, ContentTypeHandshake, serverHello); err != nil {
-				return err
-			}
-
-			// Send a ChangeCipherSpec record
-			if err := writeRecord(c.rawConn, ChangeCipherSpec, []byte{0x01}); err != nil {
-				return err
-			}
-
-			// Construct and send EncryptedExtensions
-			extensionsRaw := []byte{0x08, 0x00, 0x00, 0x02, 0x00, 0x00}
-
-			c.transcriptHash.Write(extensionsRaw)
-
-			if err := c.writeEncryptedRecord(ContentTypeHandshake, extensionsRaw); err != nil {
-				return err
-			}
-
-			// Construct and send Certificate
-			var certMsg []byte
-			certMsg = append(certMsg, 0x00) // empty certificate_request_context
-
-			var certList []byte
-			for _, der := range c.config.Certificate.Certificate {
-				certList = append(certList, byte(len(der)>>16), byte(len(der)>>8), byte(len(der)))
-				certList = append(certList, der...)
-				certList = append(certList, 0x00, 0x00) // no extensions
-			}
-
-			certMsg = append(certMsg, byte(len(certList)>>16), byte(len(certList)>>8), byte(len(certList)))
-			certMsg = append(certMsg, certList...)
-
-			certHandshake := append([]byte{0x0B}, byte(len(certMsg)>>16), byte(len(certMsg)>>8), byte(len(certMsg)))
-			certHandshake = append(certHandshake, certMsg...)
-
-			c.transcriptHash.Write(certHandshake)
-
-			if err := c.writeEncryptedRecord(ContentTypeHandshake, certHandshake); err != nil {
-				return err
-			}
-			
-			// Construct and send CertificateVerify
-			transcriptSoFar := c.transcriptHash.Sum(nil)
-
-			var scheme SignatureScheme
-			switch c.config.Certificate.PrivateKey.(type) {
-			case *rsa.PrivateKey:
-				scheme = RSASSA_PSS_RSAE_SHA256
-			case *ecdsa.PrivateKey:
-				scheme = ECDSA_SECP256R1_SHA256
-			default:
-				return errors.New("unsupported private key type")
-			}
-
-			signature, err := signCertificateVerify(c.config.Certificate.PrivateKey, transcriptSoFar, scheme)
-			if err != nil {
-				return err
-			}
-
-			certVerifyBody := marshalCertificateVerify(signature, scheme)
-			certVerifyHandshake := append([]byte{0x0F, byte(len(certVerifyBody) >> 16), byte(len(certVerifyBody) >> 8), byte(len(certVerifyBody))}, certVerifyBody...)
-
-			c.transcriptHash.Write(certVerifyHandshake)
-
-			if err := c.writeEncryptedRecord(ContentTypeHandshake, certVerifyHandshake); err != nil {
-				return err
-			}
-			
-			// Compute and send server Finished
-			snapshot = c.transcriptHash.Sum(nil)
-			finishedKey := computeFinishedKey(c.serverHsTrafficSecret)
-			verifyData := computeVerifyData(finishedKey, snapshot)
-
-			finishedHandshake := append([]byte{0x14, byte(len(verifyData) >> 16), byte(len(verifyData) >> 8), byte(len(verifyData))}, verifyData...)
-
-			c.transcriptHash.Write(finishedHandshake)
-
-			if err := c.writeEncryptedRecord(ContentTypeHandshake, finishedHandshake); err != nil {
-				return err
-			}
-			
-
-			// application traffic and keys
-			masterSecret := DeriveMasterSecret(handshakeSecret)
-			client_app_secret := hkdfExpandLabel(masterSecret, "c ap traffic", snapshot, sha256.New().Size(), sha256.New)
-			server_app_secret := deriveSecret(masterSecret, "s ap traffic", sha256.New)
-			clientTrafficKeys := DeriveTrafficKeys(client_app_secret)
-			serverTrafficKeys := DeriveTrafficKeys(server_app_secret)
-
-			// switch to app keys
-			c.writeKeys = &serverTrafficKeys
-			c.writeSeqNum = 0
-
-			// read ChangeCipherSpec
-			contentType, data, err = readRecord(c.rawConn)
-			if err != nil {
-				return err
-			}
-			if contentType == ChangeCipherSpec {
-				contentType, data, err = readRecord(c.rawConn)
-				if err != nil {
-					return err
-				}
-			}
-
-			// we now have the correct next record 
-			_, plainText, err := Decrypt(*c.readKeys, c.readSeqNum, data)
-			if err != nil {
-				return err
-			}
-
-			snapshot = c.transcriptHash.Sum(nil)
-
-			// verify client finish
-			client_finished_key := hkdfExpandLabel(clientHsTrafficSecret, "finished", []byte(""), sha256.New().Size(), sha256.New)
-			expected := computeVerifyData(client_finished_key, snapshot)
-
-			// extract verify_data from plainText
-			verifyData = plainText[4:]
-			
-
-			if subtle.ConstantTimeCompare(expected, verifyData) == 0 {
-				// does not match, invalid connection
-				return errors.New("Expected and Verified Key do not match")
-			}
-
-			c.transcriptHash.Write(plainText)
-
-			// switch to app keys for reading
-			c.readKeys = &clientTrafficKeys
-			c.readSeqNum = 0
-
-			// state set
-			c.state = stateConnected
-		}
 	}
+
+	// Decrypt client Finished using client handshake traffic keys
+	_, clientFinishedPlaintext, err := Decrypt(clientHsKeys, c.readSeqNum, nextData)
+	if err != nil {
+		return err
+	}
+	c.readSeqNum++
+
+	// Snapshot BEFORE client Finished is in the transcript
+	snapshotForClientFinished := c.transcriptHash.Sum(nil)
+
+	clientFinishedKey := hkdfExpandLabel(c.clientHsTrafficSecret, "finished", []byte{}, sha256.New().Size(), sha256.New)
+	expectedVerifyData := computeVerifyData(clientFinishedKey, snapshotForClientFinished)
+
+	// extract verify_data: skip 4-byte handshake header (type + 3-byte length)
+	receivedVerifyData := clientFinishedPlaintext[4:]
+
+	if subtle.ConstantTimeCompare(expectedVerifyData, receivedVerifyData) == 0 {
+		return errors.New("client Finished verification failed: handshake integrity check failed")
+	}
+
+	c.transcriptHash.Write(clientFinishedPlaintext)
+
+	// Switch read path to application keys
+	c.readKeys = &clientAppKeys
+	c.readSeqNum = 0
+
+	c.state = stateConnected
 	return nil
+}
+
+// buildHandshakeMessage prepends the 4-byte handshake header (type + 3-byte length) to body.
+func buildHandshakeMessage(msgType byte, body []byte) []byte {
+	header := []byte{
+		msgType,
+		byte(len(body) >> 16),
+		byte(len(body) >> 8),
+		byte(len(body)),
+	}
+	return append(header, body...)
+}
+
+// buildCertificateMessage constructs the Certificate handshake message from c.config.
+func (c *Conn) buildCertificateMessage() ([]byte, error) {
+	var certMsg []byte
+	certMsg = append(certMsg, 0x00) // empty certificate_request_context
+
+	var certList []byte
+	for _, der := range c.config.Certificate.Certificate {
+		certList = append(certList,
+			byte(len(der)>>16),
+			byte(len(der)>>8),
+			byte(len(der)),
+		)
+		certList = append(certList, der...)
+		certList = append(certList, 0x00, 0x00) // empty per-cert extensions
+	}
+
+	certMsg = append(certMsg,
+		byte(len(certList)>>16),
+		byte(len(certList)>>8),
+		byte(len(certList)),
+	)
+	certMsg = append(certMsg, certList...)
+
+	return buildHandshakeMessage(0x0B, certMsg), nil
 }
