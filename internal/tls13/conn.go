@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"errors"
 	"hash"
@@ -230,6 +231,59 @@ func (c *Conn) Handshake() error {
 				return err
 			}
 			
+
+			// application traffic and keys
+			masterSecret := DeriveMasterSecret(handshakeSecret)
+			client_app_secret := hkdfExpandLabel(masterSecret, "c ap traffic", snapshot, sha256.New().Size(), sha256.New)
+			server_app_secret := deriveSecret(masterSecret, "s ap traffic", sha256.New)
+			clientTrafficKeys := DeriveTrafficKeys(client_app_secret)
+			serverTrafficKeys := DeriveTrafficKeys(server_app_secret)
+
+			// switch to app keys
+			c.writeKeys = &serverTrafficKeys
+			c.writeSeqNum = 0
+
+			// read ChangeCipherSpec
+			contentType, data, err = readRecord(c.rawConn)
+			if err != nil {
+				return err
+			}
+			if contentType == ChangeCipherSpec {
+				contentType, data, err = readRecord(c.rawConn)
+				if err != nil {
+					return err
+				}
+			}
+
+			// we now have the correct next record 
+			_, plainText, err := Decrypt(*c.readKeys, c.readSeqNum, data)
+			if err != nil {
+				return err
+			}
+
+			snapshot = c.transcriptHash.Sum(nil)
+
+			// verify client finish
+			client_finished_key := hkdfExpandLabel(clientHsTrafficSecret, "finished", []byte(""), sha256.New().Size(), sha256.New)
+			expected := computeVerifyData(client_finished_key, snapshot)
+
+			// extract verify_data from plainText
+			verifyData = plainText[4:]
+			
+
+			if subtle.ConstantTimeCompare(expected, verifyData) == 0 {
+				// does not match, invalid connection
+				return errors.New("Expected and Verified Key do not match")
+			}
+
+			c.transcriptHash.Write(plainText)
+
+			// switch to app keys for reading
+			c.readKeys = &clientTrafficKeys
+			c.readSeqNum = 0
+
+			// state set
+			c.state = stateConnected
 		}
 	}
 	return nil
