@@ -2,6 +2,8 @@
 
 An HTTP/1.1 server built from scratch on top of raw TCP sockets — no `net/http`. Includes a from-scratch TLS 1.3 implementation (in progress).
 
+End-to-end working: a client can connect, send an HTTP request over TCP (or TLS), and receive a correct HTTP response.
+
 ## Features
 
 - Manual HTTP request parsing (request line, headers with validation, body via Content-Length)
@@ -18,6 +20,33 @@ An HTTP/1.1 server built from scratch on top of raw TCP sockets — no `net/http
 go build ./cmd/httpserver/       # Build HTTP server
 go run ./cmd/httpserver/         # Start on port 42069
 go test ./...                    # Run all tests
+```
+
+## TLS Setup
+
+Generate a self-signed certificate for local development:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -keyout server.key -out server.crt \
+  -days 365 -nodes -subj "/CN=localhost"
+```
+
+The server loads `server.crt` and `server.key` from the project root when TLS mode is enabled.
+
+## Testing
+
+```bash
+# Plain HTTP
+curl http://localhost:42069/
+
+# HTTPS with TLS (skip cert verification for self-signed)
+curl -k https://localhost:42069/
+
+# Stream video
+curl http://localhost:42069/video -o /dev/null
+
+# Proxy to httpbin
+curl http://localhost:42069/httpbin/anything
 ```
 
 ### Endpoints
