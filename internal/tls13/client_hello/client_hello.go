@@ -58,24 +58,29 @@ type ClientHello struct {
 }
 
 func parseKeyShareClientHello(ext *Extension) ([]KeyShareEntry, error) {
-    if len(ext.Data) < 2 {
+    data := ext.Data
+    if len(data) < 2 {
         return nil, errors.New("key_share too short")
     }
-	listLen := len(ext.Data)
+    listLen := int(binary.BigEndian.Uint16(data[:2]))
+    end := 2 + listLen
+    if end > len(data) {
+        return nil, errors.New("key_share list length exceeds data")
+    }
 
     var entries []KeyShareEntry
-    for i := 0; i < listLen; {
-        if i+4 > listLen {
+    for i := 2; i < end; {
+        if i+4 > end {
             return nil, errors.New("key_share entry header truncated")
         }
-        group := binary.BigEndian.Uint16(ext.Data[i:])
-        keyLen := int(binary.BigEndian.Uint16(ext.Data[i+2:]))
+        group := binary.BigEndian.Uint16(data[i:])
+        keyLen := int(binary.BigEndian.Uint16(data[i+2:]))
         i += 4
-        if i+keyLen > listLen {
+        if i+keyLen > end {
             return nil, errors.New("key_share key_exchange truncated")
         }
         keyExchange := make([]byte, keyLen)
-        copy(keyExchange, ext.Data[i:i+keyLen])
+        copy(keyExchange, data[i:i+keyLen])
         entries = append(entries, KeyShareEntry{Group: group, KeyExchange: keyExchange})
         i += keyLen
     }
@@ -85,7 +90,7 @@ func parseKeyShareClientHello(ext *Extension) ([]KeyShareEntry, error) {
 func parseSupportedVersion(ext *Extension) bool {
 	supportedVersion := []byte{0x03, 0x04}
 
-	for i := 0; i < len(ext.Data); i += 2 {
+	for i := 1; i < len(ext.Data); i += 2 {
 		if bytes.Equal(ext.Data[i:i+2], supportedVersion) {
 			return true
 		}

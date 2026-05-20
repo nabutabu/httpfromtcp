@@ -17,6 +17,7 @@ const (
 	ApplicationData      ContentType = ContentType(23)
 
 	TLS13 RecordVersion = "\x03\x03"
+	TLS11 RecordVersion = "\x03\x01"
 
 	Initialized     State = 0
 	ContentTypeDone State = 1
@@ -63,7 +64,7 @@ func (r *TLSPlainText) parseSingle(data []byte) (int, error) {
 		}
 
 		version := RecordVersion(string(data[0:2]))
-		if version != TLS13 {
+		if version != TLS13 && version != TLS11 {
 			return 0, errors.New("Version not supported")
 		}
 
@@ -86,19 +87,16 @@ func (r *TLSPlainText) parseSingle(data []byte) (int, error) {
 		r.state = LengthDone
 		return 2, nil
 	case LengthDone:
-		// parse fragment contents
-		if len(data)+len(r.fragment) > int(r.length) {
-			return 0, errors.New("Size of data is greater than specified length")
+		remaining := int(r.length) - len(r.fragment)
+		consume := len(data)
+		if consume > remaining {
+			consume = remaining
 		}
-
-		r.fragment = append(r.fragment, data...)
-
+		r.fragment = append(r.fragment, data[:consume]...)
 		if len(r.fragment) == int(r.length) {
 			r.state = Complete
-			return len(data), nil
 		}
-
-		return len(data), nil
+		return consume, nil
 	}
 
 	return 0, nil
@@ -110,11 +108,6 @@ func (record *TLSPlainText) parse(data []byte) (int, error) {
 	// run the loop until either the entire request is parsed or all bytes are consumed
 	bytesParsed := 0
 	for record.state != Complete {
-		// RFC 8446 D.4: the client isn't actually changing cipher specs, it's just sending a legacy signal to confuse intermediaries that expect TLS 1.2. Must silently discard these records.
-		if record.state == ContentTypeDone && record.ContentType == ChangeCipherSpec {
-			continue
-		}
-
 		n, err := record.parseSingle(data[bytesParsed:])
 		if err != nil {
 			return bytesParsed, err
