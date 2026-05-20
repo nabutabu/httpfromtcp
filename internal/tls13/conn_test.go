@@ -24,10 +24,7 @@ func TestConnHandshakeWithCryptoTLSClient(t *testing.T) {
 	go func() {
 		defer serverRaw.Close()
 
-		server := &Conn{
-			rawConn: serverRaw,
-			config:  &Config{Certificate: cert},
-		}
+		server := NewServerConn(serverRaw, &Config{Certificate: cert})
 
 		if err := server.Handshake(); err != nil {
 			errCh <- fmt.Errorf("server handshake: %w", err)
@@ -69,7 +66,8 @@ func TestConnHandshakeWithCryptoTLSClient(t *testing.T) {
 	buf := make([]byte, 1024)
 	n, err := tlsClient.Read(buf)
 	if err != nil {
-		t.Fatal(err)
+		serverErr := <-errCh
+		t.Fatalf("client read: %v\nserver error: %v", err, serverErr)
 	}
 
 	expectedReq := "GET / HTTP/1.1\r\nHost: test\r\n\r\n"

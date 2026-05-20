@@ -1,6 +1,7 @@
 package tls13
 
 import (
+	"bufio"
 	"bytes"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestRecordRoundtrip(t *testing.T) {
 			err := writeRecord(buf, tt.contentType, tt.data)
 			require.NoError(t, err)
 
-			contentType, data, err := readRecord(buf)
+			contentType, data, err := readRecord(bufio.NewReader(buf))
 			require.NoError(t, err)
 			assert.Equal(t, tt.contentType, contentType)
 			assert.Equal(t, tt.data, data)
@@ -67,8 +68,12 @@ func TestRecordRoundtripLargePayload(t *testing.T) {
 	err := writeRecord(buf, ApplicationData, payload)
 	require.NoError(t, err)
 
-	contentType, data, err := readRecord(buf)
-	require.NoError(t, err)
+	contentType, data, err := readRecord(bufio.NewReader(buf))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	assert.Equal(t, ApplicationData, contentType)
 	assert.Equal(t, payload, data)
 }

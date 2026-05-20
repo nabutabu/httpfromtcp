@@ -1,6 +1,7 @@
 package tls13
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
@@ -12,6 +13,7 @@ import (
 	"hash"
 	"httpFromTcp/internal/tls13/client_hello"
 	"io"
+	"log"
 	"net"
 	"time"
 )
@@ -32,6 +34,7 @@ type Conn struct {
 	rawConn net.Conn
 	config  *Config
 	state   serverState
+	reader  *bufio.Reader
 
 	// Handshake state
 	transcriptHash        hash.Hash
@@ -51,6 +54,7 @@ type Conn struct {
 func NewServerConn(rawConn net.Conn, config *Config) *Conn {
 	return &Conn{
 		rawConn: rawConn,
+		reader:  bufio.NewReader(rawConn),
 		config:  config,
 		state:   stateExpectClientHello,
 	}
@@ -72,7 +76,7 @@ func (c *Conn) Handshake() error {
 	// -------------------------------------------------------------------------
 	// Phase 1: Read ClientHello
 	// -------------------------------------------------------------------------
-	contentType, data, err := readRecord(c.rawConn)
+	contentType, data, err := readRecord(c.reader)
 	if err != nil {
 		return err
 	}
@@ -118,12 +122,14 @@ func (c *Conn) Handshake() error {
 	// -------------------------------------------------------------------------
 	// Phase 2: Key schedule — up to HandshakeSecret
 	// -------------------------------------------------------------------------
+	log.Println("Phase 2: Key schedule up to handshake secret")
 	earlySecret := DeriveEarlySecret(make([]byte, 32))
 	handshakeSecret := DeriveHandshakeSecret(earlySecret, sharedSecret)
 
 	// -------------------------------------------------------------------------
 	// Phase 3: Build and send ServerHello (plaintext)
 	// -------------------------------------------------------------------------
+	log.Println("Phase 3")
 	var serverRandom [32]byte
 	if _, err = rand.Read(serverRandom[:]); err != nil {
 		return err
@@ -161,7 +167,7 @@ func (c *Conn) Handshake() error {
 	// -------------------------------------------------------------------------
 	// Phase 4: Encrypted server flight
 	// -------------------------------------------------------------------------
-
+	log.Println("Phase 4")
 	// 4.2 EncryptedExtensions (empty)
 	encryptedExtensions := []byte{0x08, 0x00, 0x00, 0x02, 0x00, 0x00}
 	c.transcriptHash.Write(encryptedExtensions)
@@ -216,7 +222,7 @@ func (c *Conn) Handshake() error {
 	// -------------------------------------------------------------------------
 	// Phase 5: Derive application traffic keys
 	// -------------------------------------------------------------------------
-
+	log.Println("Phase 5")
 	// Snapshot AFTER server Finished is in the transcript — required for app secrets
 	snapshotAfterServerFinished := c.transcriptHash.Sum(nil)
 
@@ -234,14 +240,14 @@ func (c *Conn) Handshake() error {
 	// -------------------------------------------------------------------------
 	// Phase 5: Read and verify client Finished
 	// -------------------------------------------------------------------------
-
+	log.Println("Reading multiple records now")
 	// Discard optional ChangeCipherSpec
-	nextContentType, nextData, err := readRecord(c.rawConn)
+	nextContentType, nextData, err := readRecord(c.reader)
 	if err != nil {
 		return err
 	}
 	if nextContentType == ChangeCipherSpec {
-		nextContentType, nextData, err = readRecord(c.rawConn)
+		nextContentType, nextData, err = readRecord(c.reader)
 		if err != nil {
 			return err
 		}
@@ -343,7 +349,7 @@ func (c *Conn) Read(b []byte) (int, error) {
 		return c.readBuf.Read(b)
 	}
 
-	contentType, data, err := readRecord(c.rawConn)
+	contentType, data, err := readRecord(c.reader)
 	if err != nil {
 		return 0, err
 	}

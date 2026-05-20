@@ -41,7 +41,7 @@ func DeriveHandshakeSecret(earlySecret, sharedSecret []byte) []byte {
 
 func DeriveMasterSecret(handshakeSecret []byte) []byte {
 	salt := deriveSecret(handshakeSecret, "derived", sha256.New)
-	return hkdfExtract(salt, nil, sha256.New)
+	return hkdfExtract(salt, make([]byte, sha256.New().Size()), sha256.New)
 }
 
 func deriveSecret(secret []byte, label string, hash func() hash.Hash) []byte {
@@ -59,6 +59,9 @@ func DeriveTrafficKeys(secret []byte) CipherKeys {
 func hkdfExtract(salt, ikm []byte, hash func() hash.Hash) []byte {
 	if salt == nil {
 		salt = make([]byte, hash().Size())
+	}
+	if ikm == nil {
+		ikm = make([]byte, hash().Size())
 	}
 
 	mac := hmac.New(hash, salt) // salt is the key

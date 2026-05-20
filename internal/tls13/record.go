@@ -1,9 +1,12 @@
 package tls13
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 )
 
 type ContentType byte
@@ -42,6 +45,7 @@ func (r *TLSPlainText) parseSingle(data []byte) (int, error) {
 		if len(data) < 1 {
 			return 0, errors.New("Not enough data to parse ContentType")
 		}
+		log.Printf("readRecord: first byte = 0x%02x", data[0])
 
 		// parse ContentType which is 1 byte
 		contentType := ContentType(data[0])
@@ -127,37 +131,34 @@ func (record *TLSPlainText) parse(data []byte) (int, error) {
 * Read TLS record, structure of TLS record:
 * ContentType (1) | LegacyVersion (2) | Length (2) | Fragment (variable)
  */
-func readRecord(r io.Reader) (contentType ContentType, data []byte, err error) {
-	buf := make([]byte, 8)
-	var tlsRecord TLSPlainText
-	var line string
-	var bytesRead int
-	var bytesParsed int
-
-	for {
-		if tlsRecord.state == Complete {
-			return tlsRecord.ContentType, tlsRecord.fragment, nil
-		}
-
-		// if there is a request in flight read more bytes
-		n, err := r.Read(buf)
-		if err != nil {
-			return 0, nil, errors.New("Error reading data")
-		}
-
-		line += string(buf[:n])
-		bytesRead += n
-
-		// received some amount of text
-		bytes, err := tlsRecord.parse([]byte(line))
-		if err != nil {
-			return 0, nil, err
-		}
-
-		// after parsing set line to the remainder of parts
-		bytesParsed += bytes
-		line = line[bytes:]
+func readRecord(r *bufio.Reader) (ContentType, []byte, error) {
+	header := make([]byte, 5)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return 0, nil, err
 	}
+
+	contentType := ContentType(header[0])
+	if contentType != ChangeCipherSpec && contentType != Alert &&
+		contentType != ContentTypeHandshake && contentType != ApplicationData {
+		return 0, nil, fmt.Errorf("invalid ContentType: 0x%02x", header[0])
+	}
+
+	version := RecordVersion(header[1:3])
+	if version != TLS13 && version != TLS11 {
+		return 0, nil, errors.New("version not supported")
+	}
+
+	length := binary.BigEndian.Uint16(header[3:5])
+	if length > (1 << 14) {
+		return 0, nil, errors.New("record_overflow")
+	}
+
+	fragment := make([]byte, length)
+	if _, err := io.ReadFull(r, fragment); err != nil {
+		return 0, nil, err
+	}
+
+	return contentType, fragment, nil
 }
 
 func writeRecord(w io.Writer, contentType ContentType, data []byte) error {
