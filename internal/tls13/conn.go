@@ -12,7 +12,6 @@ import (
 	"hash"
 	"httpFromTcp/internal/tls13/client_hello"
 	"io"
-	"log"
 	"net"
 	"time"
 )
