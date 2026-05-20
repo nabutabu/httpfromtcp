@@ -11,7 +11,10 @@ import (
 	"errors"
 	"hash"
 	"httpFromTcp/internal/tls13/client_hello"
+	"io"
+	"log"
 	"net"
+	"time"
 )
 
 type serverState int
@@ -44,6 +47,14 @@ type Conn struct {
 
 	// Buffered plaintext not yet consumed by Read()
 	readBuf bytes.Buffer
+}
+
+func NewServerConn(rawConn net.Conn, config *Config) *Conn {
+	return &Conn{
+		rawConn: rawConn,
+		config:  config,
+		state:   stateExpectClientHello,
+	}
 }
 
 func (c *Conn) writeEncryptedRecord(contentType ContentType, data []byte) error {
@@ -302,4 +313,63 @@ func (c *Conn) buildCertificateMessage() ([]byte, error) {
 	certMsg = append(certMsg, certList...)
 
 	return buildHandshakeMessage(0x0B, certMsg), nil
+}
+
+func (c *Conn) Close() error {
+	return c.rawConn.Close()
+}
+
+func (c *Conn) LocalAddr() net.Addr {
+	return c.rawConn.LocalAddr()
+}
+
+func (c *Conn) RemoteAddr() net.Addr {
+	return c.rawConn.RemoteAddr()
+}
+
+func (c *Conn) SetDeadline(t time.Time) error {
+	return c.rawConn.SetDeadline(t)
+}
+
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.rawConn.SetReadDeadline(t)
+}
+
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	return c.rawConn.SetWriteDeadline(t)
+}
+
+func (c *Conn) Read(b []byte) (int, error) {
+	if c.readBuf.Len() > 0 {
+		return c.readBuf.Read(b)
+	}
+
+	contentType, data, err := readRecord(c.rawConn)
+	if err != nil {
+		return 0, err
+	}
+
+	if contentType == Alert {
+		return 0, io.EOF
+	}
+
+	if contentType != ApplicationData {
+		return 0, errors.New("tls13: unexpected content type")
+	}
+
+	_, plaintext, err := Decrypt(*c.readKeys, c.readSeqNum, data)
+	if err != nil {
+		return 0, err
+	}
+	c.readSeqNum++
+
+	c.readBuf.Write(plaintext)
+	return c.readBuf.Read(b)
+}
+
+func (c *Conn) Write(b []byte) (int, error) {
+	if err := c.writeEncryptedRecord(ApplicationData, b); err != nil {
+		return 0, err
+	}
+	return len(b), nil
 }

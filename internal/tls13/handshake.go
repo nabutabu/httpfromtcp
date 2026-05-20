@@ -32,7 +32,7 @@ const (
 func computeFinishedKey(trafficSecret []byte) []byte {
 	//finished_key = HKDF-Expand-Label(traffic_secret, "finished", "", hash.Size)
 	
-	return hkdfExpandLabel(trafficSecret, "Finished", []byte(""), sha256.New().Size(), sha256.New)
+	return hkdfExpandLabel(trafficSecret, "finished", []byte(""), sha256.New().Size(), sha256.New)
 }
 
 func computeVerifyData(finishedKey []byte, transcriptHash []byte) []byte {
