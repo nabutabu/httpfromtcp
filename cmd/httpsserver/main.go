@@ -74,6 +74,8 @@ func main() {
         Handler:   handler,
         TLSConfig: config,
     }
+	srv.IsServerClosed.Store(false)
+	srv.Start()
     defer srv.Close()
 
     log.Println("HTTPS server started on port", port)

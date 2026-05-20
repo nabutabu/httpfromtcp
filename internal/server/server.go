@@ -23,7 +23,7 @@ type Server struct {
 	Addr           string
 	Listener       net.Listener
 	Handler        Handler
-	TLSConfig      *tls13.Config // nil = plain TCP, backward compatible
+	TLSConfig      *tls13.Config
 	IsServerClosed atomic.Bool
 }
 
@@ -46,9 +46,13 @@ func (s *Server) Close() error {
 	return s.Listener.Close()
 }
 
+func (s *Server) Start() {
+    s.IsServerClosed.Store(false)
+    go s.listen()
+}
+
 func (s *Server) listen() {
 	for {
-		// Wait for a connection.
 		conn, err := s.Listener.Accept()
 		if err != nil {
 			if s.IsServerClosed.Load() {
@@ -59,10 +63,6 @@ func (s *Server) listen() {
 		}
 
 		log.Println("Connection Accepted")
-
-		// Handle the connection in a new goroutine.
-		// The loop then returns to accepting, so that
-		// multiple connections may be served concurrently.
 		go s.handle(conn)
 	}
 }
@@ -71,41 +71,37 @@ func (h *HandlerError) WriteErrorToStream(w io.Writer) {
 	response.WriteStatusLine(w, h.StatusCode)
 	headers := response.GetDefaultHeaders(len(h.Message), "text/html")
 	response.WriteHeaders(w, headers)
-
 	w.Write([]byte(h.Message))
 }
 
 func (s *Server) handle(conn net.Conn) {
 	log.Println("Handling connection")
+	defer conn.Close()
+
+	var rw io.ReadWriter = conn
+
 	if s.TLSConfig != nil {
 		tlsConn := tls13.NewServerConn(conn, s.TLSConfig)
 		if err := tlsConn.Handshake(); err != nil {
 			log.Printf("TLS handshake failed: %v", err)
-			conn.Close()
 			return
 		}
-		conn = tlsConn
+		rw = tlsConn
 	}
 
-	req, err := request.RequestFromReader(conn)
+	req, err := request.RequestFromReader(rw)
 	if err != nil {
 		hErr := &HandlerError{
 			StatusCode: response.ServerError,
 			Message:    err.Error(),
 		}
-		hErr.WriteErrorToStream(conn)
+		hErr.WriteErrorToStream(rw)
 		return
 	}
 
 	var buf bytes.Buffer
 	s.Handler(&buf, req)
-
-	b := buf.Bytes()
-
-	conn.Write(b)
+	rw.Write(buf.Bytes())
 
 	log.Println("Response sent. Closing Connection.")
-
-	// Shut down the connection.
-	defer conn.Close()
 }
