@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"httpFromTcp/internal/request"
 	"httpFromTcp/internal/response"
+	"httpFromTcp/internal/tls13"
 	"io"
 	"log"
 	"net"
@@ -22,6 +23,7 @@ type Server struct {
 	Addr           string
 	Listener       net.Listener
 	Handler        Handler
+	TLSConfig      *tls13.Config // nil = plain TCP, backward compatible
 	IsServerClosed atomic.Bool
 }
 
@@ -75,6 +77,15 @@ func (h *HandlerError) WriteErrorToStream(w io.Writer) {
 
 func (s *Server) handle(conn net.Conn) {
 	log.Println("Handling connection")
+	if s.TLSConfig != nil {
+		tlsConn := tls13.NewServerConn(conn, s.TLSConfig)
+		if err := tlsConn.Handshake(); err != nil {
+			log.Printf("TLS handshake failed: %v", err)
+			conn.Close()
+			return
+		}
+		conn = tlsConn
+	}
 
 	req, err := request.RequestFromReader(conn)
 	if err != nil {
